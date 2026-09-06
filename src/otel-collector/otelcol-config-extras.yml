@@ -70,6 +70,14 @@ exporters:
       max_backups: 30
 
 processors:
+  # Envoy access logs (one per proxied request) are ~80 % of the log volume and
+  # crowd out the application errors inside Whawit's per-window row cap; the
+  # request-level view already reaches Whawit through traces and span metrics.
+  filter/whawit_noise:
+    error_mode: ignore
+    logs:
+      log_record:
+        - 'attributes["event.name"] == "proxy.access"'
   # Keep every trace that carries an error or is slow; sample the healthy bulk.
   tail_sampling/whawit:
     decision_wait: 10s
@@ -105,5 +113,5 @@ service:
       exporters: [otlphttp/whawit, file/metrics]
     logs/whawit:
       receivers: [otlp]
-      processors: [resource_detection, memory_limiter, transform/sanitize_logs, batch/whawit]
+      processors: [resource_detection, memory_limiter, transform/sanitize_logs, filter/whawit_noise, batch/whawit]
       exporters: [otlphttp/whawit, googlecloud, file/logs]
