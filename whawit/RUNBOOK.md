@@ -41,7 +41,7 @@ only bills the disk. `whawit/vm.sh start` boots the whole stack again from the s
 What leaves the VM (see `otelcol-config-extras.yml`):
 
 - **traces → Whawit** tail-sampled: every trace with an error span or slower than 2 s, plus 5 % of the rest.
-- **logs → Whawit and Cloud Logging** (`logName=projects/whawit/logs/astronomy-shop`, resource `generic_task`, `service.*` attributes as labels).
+- **logs → Whawit and Cloud Logging** (`logName=projects/whawit/logs/astronomy-shop`, resource `generic_node` with `namespace=opentelemetry-demo`, `node_id=otel-demo`; `service.name`, `service.namespace` and `host.name` as entry labels).
 - **metrics → Whawit**: only what services emit over OTLP plus span metrics. Docker/host/nginx/redis/postgres scrapes stay in the local Prometheus (Cloud Monitoring custom metrics are billed by volume, so none go to GCP).
 - Every Whawit-bound batch is also appended to `/recordings/*.jsonl`. That is the raw material for golden cases: the recording is exactly what Whawit saw.
 
