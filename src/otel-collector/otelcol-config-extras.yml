@@ -1,33 +1,109 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Extras/customization layer for the OTel Collector.
-# Override this file in your fork to add exporters for your own observability backend.
+# Whawit customization layer (loaded last; see upstream note: the collector
+# merges maps but REPLACES arrays, so upstream pipelines are left untouched and
+# Whawit gets its own `*/whawit` pipelines instead).
 #
-# This file is intentionally empty. It is always loaded last, giving forks
-# a stable, well-defined seam to customize without touching upstream files.
+# What leaves the VM:
+#   - traces  -> Whawit OTLP ingest (tail-sampled: every error/slow trace, 5 % of the rest)
+#   - logs    -> Whawit OTLP ingest + Google Cloud Logging (logName astronomy-shop)
+#   - metrics -> Whawit OTLP ingest (only what the services emit via OTLP + span metrics;
+#               docker/host/nginx/redis/postgres scrapes stay local in Prometheus)
+#   - every Whawit-bound signal is also written to /recordings as OTLP JSON, so a
+#     scenario run leaves a replayable capture of exactly what Whawit saw.
 #
-# IMPORTANT: The OTel Collector merges config files but REPLACES arrays, not appends.
-# If you want to keep the default observability stack alongside your own exporters,
-# you must explicitly repeat the upstream exporter names in your pipeline definitions.
-#
-# Upstream exporter names (repeat these to keep them active):
-#   traces:  otlp_grpc/jaeger, debug, span_metrics
-#   metrics: otlp_http/prometheus, debug
-#   logs:    opensearch, debug
-#
-# Example:
-#
-# exporters:
-#   otlp_grpc/mybackend:
-#     endpoint: https://ingest.mybackend.com
-#
-# service:
-#   pipelines:
-#     traces:
-#       exporters: [otlp_grpc/jaeger, debug, span_metrics, otlp_grpc/mybackend]  # repeat upstream exporters
-#     metrics:
-#       receivers: [docker_stats, http_check/frontend-proxy, host_metrics, nginx, otlp, redis, span_metrics]
-#       exporters: [otlp_http/prometheus, debug, otlp_grpc/mybackend]           # repeat upstream exporters
-#     logs:
-#       exporters: [opensearch, debug, otlp_grpc/mybackend]                     # repeat upstream exporters
+# WHAWIT_API_KEY is injected by whawit/vm/startup.sh from Secret Manager at boot
+# and never lives in this repository.
+
+exporters:
+  otlphttp/whawit:
+    endpoint: ${env:WHAWIT_OTLP_ENDPOINT}
+    encoding: json
+    compression: gzip
+    timeout: 30s
+    headers:
+      x-whawit-api-key: ${env:WHAWIT_API_KEY}
+      x-whawit-project-id: ${env:WHAWIT_PROJECT_ID}
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 2000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 600s
+
+  googlecloud:
+    project: whawit
+    log:
+      default_log_name: astronomy-shop
+      resource_filters:
+        - prefix: service.
+        - prefix: host.name
+        - prefix: container.
+
+  file/traces:
+    path: /recordings/traces.jsonl
+    format: json
+    create_directory: true
+    rotation:
+      max_megabytes: 200
+      max_days: 7
+      max_backups: 30
+  file/logs:
+    path: /recordings/logs.jsonl
+    format: json
+    create_directory: true
+    rotation:
+      max_megabytes: 200
+      max_days: 7
+      max_backups: 30
+  file/metrics:
+    path: /recordings/metrics.jsonl
+    format: json
+    create_directory: true
+    rotation:
+      max_megabytes: 200
+      max_days: 7
+      max_backups: 30
+
+processors:
+  # Keep every trace that carries an error or is slow; sample the healthy bulk.
+  tail_sampling/whawit:
+    decision_wait: 10s
+    num_traces: 20000
+    expected_new_traces_per_sec: 200
+    policies:
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: slow
+        type: latency
+        latency:
+          threshold_ms: 2000
+      - name: baseline
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 5
+  batch/whawit:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+service:
+  pipelines:
+    traces/whawit:
+      receivers: [otlp]
+      processors: [resource_detection, memory_limiter, transform/sanitize_spans, transform/redact_sensitive_data, tail_sampling/whawit, batch/whawit]
+      exporters: [otlphttp/whawit, file/traces]
+    metrics/whawit:
+      receivers: [otlp, span_metrics]
+      processors: [resource_detection, memory_limiter, batch/whawit]
+      exporters: [otlphttp/whawit, file/metrics]
+    logs/whawit:
+      receivers: [otlp]
+      processors: [resource_detection, memory_limiter, transform/sanitize_logs, batch/whawit]
+      exporters: [otlphttp/whawit, googlecloud, file/logs]

@@ -58,3 +58,6 @@ src/frontend/cypress/screenshots
 src/shipping/target/
 
 !src/currency/build
+
+# Whawit: local recordings written by the collector's file exporters
+recordings/
